@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Web Search Skill</title>
+</head>
+<body>
+    <script>
+        window['ai_edge_gallery_get_result'] = async (data, secret) => {
+            try {
+                const jsonData = JSON.parse(data);
+                const query = (jsonData.query || '').trim();
+                const count = Math.min(Math.max(parseInt(jsonData.count) || 5, 1), 10);
+
+                if (!query) {
+                    return JSON.stringify({ error: 'Empty query. Please provide a search query.' });
+                }
+                if (!secret) {
+                    return JSON.stringify({ error: 'Missing Brave Search API key. Add it via the skill secret prompt.' });
+                }
+
+                const url = `https://first-worker.mateusz-kopcinski.workers.dev/?q=${encodeURIComponent(query)}&count=${count}&safesearch=moderate`;
+
+
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+                try {
+
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Subscription-Token': secret
+                        },
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        const errText = await response.text();
+                        return JSON.stringify({
+                            error: `Brave Search API returned ${response.status}: ${errText.slice(0, 200)}`
+                        });
+                    }
+
+                    const payload = await response.json();
+                    const webResults = (payload.web && payload.web.results) || [];
+
+                    if (webResults.length === 0) {
+                        return JSON.stringify({
+                            result: `No results found for "${query}".`
+                        });
+                    }
+
+                    // Format compact text for the LLM to reason over
+                    const formatted = webResults.slice(0, count).map((r, i) => {
+                        const title = r.title || 'Untitled';
+                        const desc = (r.description || '').replace(/<[^>]+>/g, '').trim();
+                        const age = r.age ? ` (${r.age})` : '';
+                        return `[${i + 1}] ${title}${age}\n    ${r.url}\n    ${desc}`;
+                    }).join('\n\n');
+
+                    // Build a webview-friendly results page
+                    const resultsForView = webResults.slice(0, count).map(r => ({
+                        title: r.title || 'Untitled',
+                        url: r.url || '',
+                        description: (r.description || '').replace(/<[^>]+>/g, ''),
+                        age: r.age || ''
+                    }));
+                    const encodedResults = encodeURIComponent(JSON.stringify(resultsForView));
+                    const encodedQuery = encodeURIComponent(query);
+
+                    return JSON.stringify({
+                        result: `Search results for "${query}":\n\n${formatted}`,
+                        webview: {
+                            url: `results.html?q=${encodedQuery}&data=${encodedResults}`,
+                            aspectRatio: 0.75
+                        }
+                    });
+                } catch (e) {
+                    if (e.name === 'AbortError') {
+                        return JSON.stringify({ error: 'Request timed out after 10s' });
+                    }
+                    return JSON.stringify({ error: `Fetch failed: ${e.message}` });
+                }
+            } catch (e) {
+                console.error(e);
+                return JSON.stringify({
+                    error: `Web search failed: ${e.message}`
+                });
+            }
+        };
+    </script>
+</body>
+</html>
